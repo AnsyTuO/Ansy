@@ -2,21 +2,33 @@ import sys
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFrame, QLabel, QTextEdit, QSizePolicy, QListWidget,
-    QScrollArea, QListWidgetItem, QLineEdit, QComboBox, QMenu,QWidgetAction,QDateEdit, QInputDialog, QDialog 
+    QScrollArea, QListWidgetItem, QLineEdit, QComboBox, QMenu,QWidgetAction,QDateEdit, QInputDialog, QDialog, QStackedWidget,QCalendarWidget,QStyle,QStyleFactory,
+    QGraphicsDropShadowEffect,QFileDialog,QMessageBox
 )
 from PyQt6.QtGui import QIcon, QPainter, QColor, QLinearGradient, QBrush, QFont, QPixmap, QPalette, QMovie, QTextOption, QAction, QPen
-from PyQt6.QtCore import Qt, QSize, QPoint, QDate, QDateTime, QTimer, QThread, pyqtSignal,QLocale
+from PyQt6.QtCore import Qt, QSize, QPoint, QDate, QDateTime, QTimer, QThread, pyqtSignal,QLocale, QRect
 from collections import defaultdict
 import requests
 import json
 import uuid
+import os
 
+def resource_path(relative_path):
+    """Получить абсолютный путь к ресурсу, работает как в разработке, так и в собранном .exe"""
+    try:
+        # PyInstaller создаёт временную папку и хранит путь в _MEIPASS
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 class WeatherWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.api_key = "7843212f383821f21575d4b2526e4634"  # Замените на реальный ключ
-        self.city = "Москва"            # Город по умолчанию
+        self.settings_file = "settings.json"
+        # Загружаем город из настроек
+        self.city = self.load_city() or "Москва"
         self.weather_data = None
 
         self.setStyleSheet("""
@@ -81,19 +93,6 @@ class WeatherWidget(QWidget):
         self.feels_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.feels_label)
 
-        # --- Мин / Макс ---
-        minmax_layout = QHBoxLayout()
-        minmax_layout.setSpacing(30)
-        minmax_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.min_label = QLabel("↑ --°")
-        self.min_label.setStyleSheet("color: #98a1bc; font-size: 15px;")
-        self.max_label = QLabel("↓ --°")
-        self.max_label.setStyleSheet("color: #98a1bc; font-size: 15px;")
-        minmax_layout.addWidget(self.min_label)
-        minmax_layout.addWidget(self.max_label)
-        main_layout.addLayout(minmax_layout)
-
         # --- Прогноз на 7 дней (короткие названия) ---
         forecast_layout = QHBoxLayout()
         forecast_layout.setSpacing(6)
@@ -138,11 +137,30 @@ class WeatherWidget(QWidget):
         # Первое обновление
         self.update_weather()
 
+    def load_city(self):
+        """Загружает сохранённый город из файла settings.json."""
+        try:
+            with open(self.settings_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("city")
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    def save_city(self, city):
+        """Сохраняет город в файл settings.json."""
+        try:
+            with open(self.settings_file, "w", encoding="utf-8") as f:
+                json.dump({"city": city}, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            return False
+
     def update_weather_by_city(self):
-        """Обновляет погоду для города, введённого в поле."""
         city = self.city_input.text().strip()
         if city:
             self.city = city
+            # Сохраняем город в настройки
+            self.save_city(city)
             self.update_weather()
 
     def update_weather(self):
@@ -182,8 +200,7 @@ class WeatherWidget(QWidget):
         # Температура
         self.temp_label.setText(f"{int(round(temp))}°C")
         self.feels_label.setText(f"Ощущается как {int(round(feels_like))}°")
-        self.min_label.setText(f"↑ {int(round(temp_min))}°")
-        self.max_label.setText(f"↓ {int(round(temp_max))}°")
+       
 
         # Заголовок (добавим описание)
         self.temp_label.setToolTip(f"{description}, {self.city}")
@@ -628,6 +645,115 @@ class StyledDateEditDialog(QDialog):
             return dialog.get_date(), True
         return None, False
 
+class TaskWidget(QFrame):
+    def __init__(self, task_id, text, date_str, parent=None):
+        super().__init__(parent)
+        self._task_id = task_id
+        self._original_text = text
+        self._current_date = date_str
+        self._target_layout = None   # будет установлен при добавлении в layout
+
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setMinimumWidth(0)
+        self.setStyleSheet("background-color: white; border-radius: 20px; padding: 5px;")
+
+        # Основной HLayout
+        task_layout = QHBoxLayout(self)
+        task_layout.setContentsMargins(10, 8, 10, 8)
+        task_layout.setSpacing(10)
+
+        # Вертикальный лейаут для текста и даты
+        v_layout = QVBoxLayout()
+        v_layout.setSpacing(2)
+
+        # Текст задачи
+        self._label = QTextEdit()
+        self._label.setReadOnly(True)
+        self._label.setText(text)
+        self._label.setWordWrapMode(QTextOption.WrapMode.WordWrap)
+        self._label.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._label.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._label.setMinimumWidth(0)
+        self._label.setStyleSheet("""
+            QTextEdit {
+                background: transparent;
+                border: none;
+                padding: 0px;
+                color: #9297b0;
+                font-size: 14px;
+            }
+        """)
+        v_layout.addWidget(self._label)
+
+        # Дата (маленькая подпись)
+        self._date_label = QLabel(date_str)
+        self._date_label.setStyleSheet("color: #b0b0b0; font-size: 10px; padding: 0px;")
+        self._date_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        v_layout.addWidget(self._date_label)
+
+        task_layout.addLayout(v_layout, stretch=1)
+
+        # Кнопка "Выполнено"
+        self._done_btn = QPushButton("")
+        self._done_btn.setFixedSize(24, 24)
+        self._done_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: gray;
+                border: 2px solid gray;
+                border-radius: 12px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: gray;
+                color: white;
+            }
+        """)
+        task_layout.addWidget(self._done_btn)
+
+        # Контекстное меню
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(
+            lambda pos: self.show_context_menu(pos)   # мы передадим обработку в контейнер позже
+        )
+
+    # ------ Методы для управления данными ------
+    def set_text(self, new_text):
+        self._original_text = new_text
+        self._label.setText(new_text)
+
+    def set_date(self, new_date_str):
+        self._current_date = new_date_str
+        self._date_label.setText(new_date_str)
+
+    def get_text(self):
+        return self._original_text
+
+    def get_date(self):
+        return self._current_date
+
+    def get_task_id(self):
+        return self._task_id
+
+    def set_target_layout(self, layout):
+        self._target_layout = layout
+
+    def get_target_layout(self):
+        return self._target_layout
+
+    # ------ Метод для отображения контекстного меню (вызывается из TaskContainer) ------
+    def show_context_menu(self, pos):
+        # Мы будем вызывать метод контейнера, передавая себя
+        # Для этого нужно хранить ссылку на контейнер
+        # Самое простое – установить родителя, и через parent() получить TaskContainer
+        parent = self.parent()
+        while parent is not None and not isinstance(parent, TaskContainer):
+            parent = parent.parent()
+        if parent is not None:
+            parent.show_context_menu(pos, self)
+
 class TaskManager:
     def __init__(self, storage_file="tasks.json"):
         self.storage_file = storage_file
@@ -732,6 +858,1092 @@ class TaskManager:
                 return task.get("date", QDate.currentDate().toString("dd.MM.yyyy"))
         return QDate.currentDate().toString("dd.MM.yyyy")
 
+class ClickableLabel(QLabel):
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+        self._menu = None
+
+    def set_menu(self, menu):
+        self._menu = menu
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._menu:
+            self._menu.exec(self.mapToGlobal(QPoint(0, self.height())))
+        super().mousePressEvent(event)
+
+class AllTasksPage(QWidget):
+    def __init__(self, task_manager, parent=None):
+        super().__init__(parent)
+        self.task_manager = task_manager
+
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: transparent;")
+
+        self.h_layout = QHBoxLayout(self)
+        self.h_layout.setContentsMargins(20, 20, 20, 20)
+        self.h_layout.setSpacing(20)
+
+        self.left_widget = QWidget()
+        self.left_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.left_widget.setStyleSheet("background: transparent;")
+        self.left_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        left_layout = QVBoxLayout(self.left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(15)
+
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(10)
+
+        title = QLabel("Все активные задачи")
+        title.setStyleSheet("""
+            background: rgba(255,255,255,0.7);
+            border-radius: 15px;
+            color: #98a1bc;
+            font-size: 24px;
+            font-weight: bold;
+            padding: 8px 15px;
+        """)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_layout.addWidget(title, stretch=1)
+
+        self.sort_btn = _SortButton()
+        self.sort_btn.setText("Сортировка")
+        self.sort_btn.setStyleSheet("background-color: rgba(255,255,255,0.7); color: #98a1bc; border-radius: 12px; font-size: 14px;")
+        self.sort_btn.setFixedWidth(140)
+        self.sort_btn.setFixedHeight(30)
+        self.sort_btn.clicked.connect(self.show_sort_menu)
+
+        self.sort_menu = QMenu()
+        self.sort_menu.setWindowFlags(
+            Qt.WindowType.Popup |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.NoDropShadowWindowHint
+        )
+        self.sort_menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.sort_menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                border-radius: 12px;
+                padding: 5px;
+                border: 1px solid #ddd;
+            }
+            QMenu::item {
+                padding: 5px 20px;
+                border-radius: 6px;
+                color: #98a1bc;
+                font-size: 14px;
+                background: transparent;
+            }
+            QMenu::item:selected {
+                background-color: rgba(200,200,200,0.3);
+            }
+        """)
+        self.sort_menu.addAction("По дате", lambda: self.set_sort(0))
+        self.sort_menu.addAction("По приоритету", lambda: self.set_sort(1))
+
+        self.sort_mode = 0
+
+        header_layout.addWidget(self.sort_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        left_layout.addLayout(header_layout)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.list_widget.setMinimumHeight(100)
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                background: rgba(255,255,255,0.4);
+                border-radius: 30px;
+                border: none;
+                padding: 15px;
+                font-size: 16px;
+            }
+            QListWidget::item {
+                background: transparent;
+                border: none;
+                padding: 6px 0px;
+                margin: 0px;
+            }
+            QScrollBar:vertical {
+                width: 0px;
+                background: transparent;
+            }
+        """)
+        left_layout.addWidget(self.list_widget)
+
+        self.right_panel = QWidget()
+        self.right_panel.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.right_panel.setStyleSheet("background: transparent;")
+        self.right_panel.setVisible(False)
+        self.right_panel.setMinimumWidth(0)
+        self.right_panel.setMaximumWidth(580)
+        self.right_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        right_layout = QVBoxLayout(self.right_panel)
+        right_layout.setContentsMargins(10, 10, 10, 10)
+        right_layout.setSpacing(10)
+
+        title_done = QLabel("Выполненные")
+        title_done.setStyleSheet("""
+            background: rgba(255,255,255,0.7);
+            color: #98a1bc;
+            font-size: 24px;
+            border-radius: 15px;
+            padding: 5px;
+        """)
+        title_done.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right_layout.addWidget(title_done)
+
+        self.done_list = QListWidget()
+        self.done_list.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.done_list.setStyleSheet("""
+            QListWidget {
+                background: rgba(255,255,255,0.7);
+                border-radius: 30px;
+                border: none;
+                color: #98a1bc;
+                font-size: 16px;
+                padding: 10px;
+            }
+            QListWidget::item {
+                background: rgba(255,255,255,1);
+                border-radius: 15px;
+                padding: 8px 12px;
+                margin: 3px 0px;
+            }
+            QScrollBar:vertical {
+                width: 0px;
+                background: transparent;
+            }
+        """)
+        right_layout.addWidget(self.done_list, stretch=3)
+
+        self.h_layout.addWidget(self.left_widget, stretch=1)
+        self.h_layout.addWidget(self.right_panel, stretch=1)
+
+        self.load_tasks()
+        self.load_done_tasks()
+
+        self.done_list.itemDoubleClicked.connect(self.restore_done_task)
+        self.done_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.done_list.customContextMenuRequested.connect(self.show_done_context_menu)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QBrush(QColor(255, 255, 255, 100)))
+        painter.setPen(Qt.PenStyle.NoPen)
+        rect = self.rect().adjusted(10, 10, -10, -10)
+        painter.drawRoundedRect(rect, 30, 30)
+
+    def show_sort_menu(self):
+        pos = self.sort_btn.mapToGlobal(QPoint(0, self.sort_btn.height()))
+        self.sort_menu.exec(pos)
+
+    def set_sort(self, mode):
+        self.sort_mode = mode
+        self.sort_btn.setText(["По дате ▼", "По приоритету ▼"][mode])
+        self.load_tasks()
+
+    def load_tasks(self):
+        self.list_widget.clear()
+        tasks = self.task_manager.get_active_tasks()
+        if not tasks:
+            item = QListWidgetItem("Нет активных задач")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.list_widget.addItem(item)
+            return
+
+        if self.sort_mode == 0:
+            tasks.sort(key=lambda t: QDate.fromString(t.get('date', '01.01.2000'), 'dd.MM.yyyy'))
+        else:
+            tasks.sort(key=lambda t: t.get('column', 0))
+
+        for task in tasks:
+            widget = self._create_task_widget(task)
+            item = QListWidgetItem()
+            # Устанавливаем фиксированную высоту 150 для всех элементов
+            item.setSizeHint(QSize(0, 100))
+            self.list_widget.addItem(item)
+            self.list_widget.setItemWidget(item, widget)
+
+    def _get_priority_color(self, column):
+        colors = {
+            0: "#fdd5cf",
+            1: "#fee5b7",
+            2: "#cbe5d8",
+        }
+        return colors.get(column, "#b0b0b0")
+
+    def _create_task_widget(self, task):
+        container = QFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border-radius: 16px;
+                padding: 6px 10px;
+            }
+        """)
+        # Устанавливаем фиксированную высоту 150 пикселей
+        container.setFixedHeight(100)
+
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(8)
+        shadow.setColor(QColor(0, 0, 0, 30))
+        shadow.setOffset(0, 2)
+        container.setGraphicsEffect(shadow)
+
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        marker = QFrame()
+        marker.setFixedWidth(8)
+        marker.setFixedHeight(30)
+        marker.setStyleSheet(f"""
+            border-radius: 4px;
+            background-color: {self._get_priority_color(task.get('column', 0))};
+        """)
+        layout.addWidget(marker, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        label = QLabel(task["text"])
+        label.setWordWrap(True)
+        label.setStyleSheet("""
+            color: #969eb9;
+            font-size: 16px;
+            font-weight: 500;
+            background: transparent;
+            padding: 0px;
+        """)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        layout.addWidget(label, stretch=1)
+
+        right_widget = QWidget()
+        right_widget.setStyleSheet("background: transparent;")
+        right_layout = QHBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
+        date_str = task.get('date', QDate.currentDate().toString('dd.MM.yyyy'))
+        date_label = QLabel(date_str)
+        date_label.setStyleSheet("color: #b0b0b0; font-size: 12px;")
+        date_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        right_layout.addWidget(date_label)
+
+        done_btn = QPushButton()
+        done_btn.setFixedSize(24, 24)
+        done_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: 2px solid #c0c0d0;
+                border-radius: 12px;
+            }
+            QPushButton:hover {
+                background-color: #4CAF50;
+                border-color: #4CAF50;
+            }
+        """)
+        done_btn.clicked.connect(lambda: self.mark_task_done(task["id"]))
+        right_layout.addWidget(done_btn)
+
+        layout.addWidget(right_widget, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        return container
+
+    def mark_task_done(self, task_id):
+        if self.task_manager.mark_done(task_id):
+            self.load_tasks()
+            self.load_done_tasks()
+
+    def load_done_tasks(self):
+        self.done_list.clear()
+        for task in self.task_manager.get_done_tasks():
+            item = QListWidgetItem(task["text"])
+            item.setData(Qt.ItemDataRole.UserRole, task["original_text"])
+            item.setSizeHint(QSize(0, 150))
+            self.done_list.addItem(item)
+
+    def restore_done_task(self, item):
+        original_text = item.data(Qt.ItemDataRole.UserRole)
+        if not original_text:
+            display_text = item.text()
+            idx = display_text.rfind("  (")
+            if idx != -1:
+                original_text = display_text[:idx]
+            else:
+                original_text = display_text
+
+        task_id = None
+        for task in self.task_manager.tasks:
+            if task.get("original_text") == original_text and task.get("done"):
+                task_id = task["id"]
+                break
+
+        if task_id is not None:
+            self.task_manager.restore_task(task_id)
+            self.load_tasks()
+            self.load_done_tasks()
+
+    def delete_done_task(self, item):
+        original_text = item.data(Qt.ItemDataRole.UserRole)
+        if not original_text:
+            display_text = item.text()
+            idx = display_text.rfind("  (")
+            if idx != -1:
+                original_text = display_text[:idx]
+            else:
+                original_text = display_text
+
+        task_id = None
+        for task in self.task_manager.tasks:
+            if task.get("original_text") == original_text and task.get("done"):
+                task_id = task["id"]
+                break
+
+        if task_id is not None:
+            self.task_manager.delete_task(task_id)
+
+        row = self.done_list.row(item)
+        self.done_list.takeItem(row)
+
+    def show_done_context_menu(self, pos):
+        item = self.done_list.itemAt(pos)
+        if item is None:
+            return
+
+        menu = QMenu()
+        menu.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                border-radius: 20px;
+                border: none;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 0px;
+                margin: 0px;
+            }
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 0px;
+            }
+            QPushButton:hover {
+                background-color: rgba(200,200,200,0.15);
+                border-radius: 8px;
+            }
+            QPushButton:focus {
+                outline: none;
+            }
+        """)
+
+        container = QWidget()
+        container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        layout = QHBoxLayout(container)
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        btn_restore = QPushButton()
+        btn_restore.setIcon(QIcon(resource_path("restore.png")))
+        btn_restore.setIconSize(QSize(24, 24))
+        btn_restore.setFixedSize(40, 40)
+        btn_restore.setToolTip("Восстановить")
+        btn_restore.clicked.connect(lambda: self.restore_done_task(item))
+        btn_restore.clicked.connect(menu.close)
+
+        btn_delete = QPushButton()
+        btn_delete.setIcon(QIcon(resource_path("delete.png")))
+        btn_delete.setIconSize(QSize(24, 24))
+        btn_delete.setFixedSize(40, 40)
+        btn_delete.setToolTip("Удалить навсегда")
+        btn_delete.clicked.connect(lambda: self.delete_done_task(item))
+        btn_delete.clicked.connect(menu.close)
+
+        layout.addWidget(btn_restore)
+        layout.addWidget(btn_delete)
+
+        widget_action = QWidgetAction(menu)
+        widget_action.setDefaultWidget(container)
+        menu.addAction(widget_action)
+
+        menu.exec(self.done_list.mapToGlobal(pos))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        total_width = self.width()
+        if total_width > 1230:
+            self.right_panel.setVisible(True)
+        else:
+            self.right_panel.setVisible(False)
+
+class _SortButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #98a1bc;
+                font-size: 14px;
+                padding: 5px 10px;
+                border-radius: 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255,255,255,0.5);
+            }
+        """)
+
+class CalendarGrid(QWidget):
+    dateSelected = pyqtSignal(QDate)
+
+    def __init__(self, task_manager, parent=None):
+        super().__init__(parent)
+        self.task_manager = task_manager
+        self.current_date = QDate.currentDate()
+        self.selected_date = self.current_date
+        self.setMinimumSize(350, 250)
+        self.setMouseTracking(True)
+        self.hovered_date = QDate()
+        self.setStyleSheet("background: transparent;")
+
+    def set_date(self, date):
+        self.current_date = date
+        self.update()
+
+    def previous_month(self):
+        self.current_date = self.current_date.addMonths(-1)
+        self.update()
+
+    def next_month(self):
+        self.current_date = self.current_date.addMonths(1)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect()
+        painter.setBrush(QColor(255, 255, 255, 200))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(rect, 20, 20)
+
+        margin = 12
+        top_offset = 30
+        day_width = (rect.width() - 2 * margin) // 7
+        day_height = (rect.height() - top_offset - margin) // 6
+
+        # Дни недели (русские)
+        font = painter.font()
+        font.setPointSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(150, 150, 170))
+        days_of_week = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
+        for i, day_name in enumerate(days_of_week):
+            cell_rect = QRect(margin + i * day_width, 0, day_width, top_offset)
+            painter.drawText(cell_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, day_name)
+
+        # Определяем первый день месяца
+        first_day = QDate(self.current_date.year(), self.current_date.month(), 1)
+        start_weekday = first_day.dayOfWeek()
+        start_offset = start_weekday - 1 if start_weekday != 7 else 6
+        days_in_month = first_day.daysInMonth()
+
+        font.setPointSize(10)
+        font.setBold(False)
+        painter.setFont(font)
+
+        for day in range(1, days_in_month + 1):
+            row = (start_offset + day - 1) // 7
+            col = (start_offset + day - 1) % 7
+            cell_rect = QRect(margin + col * day_width, top_offset + row * day_height, day_width, day_height)
+
+            date = QDate(self.current_date.year(), self.current_date.month(), day)
+            is_today = date == QDate.currentDate()
+            is_selected = date == self.selected_date
+
+            text = str(day)
+            text_rect = painter.boundingRect(cell_rect, Qt.AlignmentFlag.AlignCenter, text)
+            text_center = text_rect.center()
+
+            # Смещаем центр круга на 1 пиксель вправо и на 2 вниз
+            circle_center = text_center + QPoint(1, 2)
+
+            radius = min(day_width, day_height) // 2 - 2
+
+            if is_selected:
+                painter.setBrush(QColor(255, 255, 255))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(circle_center, radius, radius)
+                painter.setPen(QColor(60, 60, 90))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+            elif is_today:
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QColor(253, 213, 207))
+                painter.drawEllipse(circle_center, radius, radius)
+                painter.setPen(QColor(60, 60, 90))
+            else:
+                painter.setPen(QColor(60, 60, 90))
+
+            painter.drawText(cell_rect, Qt.AlignmentFlag.AlignCenter, text)
+
+            # Точки приоритетов
+            date_str = date.toString("dd.MM.yyyy")
+            tasks = self.task_manager.tasks
+            day_tasks = [t for t in tasks if t.get("date") == date_str and not t.get("done", False)]
+            if day_tasks:
+                priorities = set()
+                for t in day_tasks:
+                    col_priority = t.get("column", 0)
+                    priorities.add(col_priority)
+                colors = {
+                    0: "#fdd5cf",
+                    1: "#fee5b7",
+                    2: "#cbe5d8"
+                }
+                painter.save()
+                dot_size = 4
+                spacing = 2
+                total_dots = len(priorities)
+                if total_dots > 0:
+                    total_width = total_dots * dot_size + (total_dots - 1) * spacing
+                    start_x = text_center.x() - total_width // 2
+                    dot_y = text_center.y() + day_height // 2 - 8
+                    for i, col_prio in enumerate(sorted(priorities)):
+                        color = colors.get(col_prio, "#b0b0b0")
+                        painter.setBrush(QColor(color))
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        dot_rect = QRect(start_x + i * (dot_size + spacing), dot_y, dot_size, dot_size)
+                        painter.drawEllipse(dot_rect)
+                painter.restore()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            rect = self.rect()
+            margin = 12
+            top_offset = 30
+            day_width = (rect.width() - 2 * margin) // 7
+            day_height = (rect.height() - top_offset - margin) // 6
+            click_x = event.position().x()
+            click_y = event.position().y()
+
+            if click_x > margin and click_x < rect.width() - margin and click_y > top_offset and click_y < rect.height() - margin:
+                col = int((click_x - margin) // day_width)
+                row = int((click_y - top_offset) // day_height)
+                first_day = QDate(self.current_date.year(), self.current_date.month(), 1)
+                start_weekday = first_day.dayOfWeek()
+                start_offset = start_weekday - 1 if start_weekday != 7 else 6
+                day_number = row * 7 + col - start_offset + 1
+                if 1 <= day_number <= first_day.daysInMonth():
+                    date = QDate(self.current_date.year(), self.current_date.month(), day_number)
+                    self.selected_date = date
+                    self.update()
+                    self.dateSelected.emit(date)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        rect = self.rect()
+        margin = 12
+        top_offset = 30
+        day_width = (rect.width() - 2 * margin) // 7
+        day_height = (rect.height() - top_offset - margin) // 6
+        pos = event.position()
+        if pos.x() > margin and pos.x() < rect.width() - margin and pos.y() > top_offset and pos.y() < rect.height() - margin:
+            col = int((pos.x() - margin) // day_width)
+            row = int((pos.y() - top_offset) // day_height)
+            first_day = QDate(self.current_date.year(), self.current_date.month(), 1)
+            start_weekday = first_day.dayOfWeek()
+            start_offset = start_weekday - 1 if start_weekday != 7 else 6
+            day_number = row * 7 + col - start_offset + 1
+            if 1 <= day_number <= first_day.daysInMonth():
+                date = QDate(self.current_date.year(), self.current_date.month(), day_number)
+                if date != self.hovered_date:
+                    self.hovered_date = date
+                    self.update()
+                return
+        if self.hovered_date.isValid():
+            self.hovered_date = QDate()
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.hovered_date = QDate()
+        self.update()
+        super().leaveEvent(event)
+
+class CustomCalendar(QCalendarWidget):
+    def __init__(self, task_manager, parent=None):
+        super().__init__(parent)
+        self.task_manager = task_manager
+        self.setStyleSheet("""
+            QCalendarWidget {
+                background-color: white;
+                border-radius: 30px;
+                padding: 10px;
+            }
+            QCalendarWidget QWidget#qt_calendar_navigationbar {
+                background-color: transparent;
+            }
+            QCalendarWidget QToolButton {
+                color: #98a1bc;
+                font-size: 16px;
+                border: none;
+                background: transparent;
+                padding: 5px;
+                border-radius: 8px;
+            }
+            QCalendarWidget QToolButton:hover {
+                background-color: rgba(255,255,255,0.5);
+            }
+            QCalendarWidget QToolButton:pressed {
+                background-color: rgba(200,200,200,0.3);
+            }
+            QCalendarWidget QTableView {
+                background: transparent;
+                selection-background-color: #7a6bc4;
+                selection-color: white;
+                alternate-background-color: #f9f9f9;
+            }
+            QCalendarWidget QTableView::item {
+                padding: 8px;
+                border-radius: 8px;
+                border: none;
+            }
+            QCalendarWidget QTableView::item:hover {
+                background-color: rgba(200,200,200,0.2);
+            }
+            QCalendarWidget QTableView::item:selected {
+                background-color: #7a6bc4;
+                color: white;
+            }
+            QCalendarWidget QHeaderView::section {
+                background-color: transparent;
+                color: #98a1bc;
+                padding: 6px;
+                border: none;
+                font-weight: bold;
+                text-transform: uppercase;
+                font-size: 12px;
+            }
+            QCalendarWidget QHeaderView {
+                background-color: transparent;
+                border: none;
+            }
+        """)
+
+    def paintCell(self, painter, rect, date):
+        # Стандартная отрисовка ячейки
+        super().paintCell(painter, rect, date)
+
+        date_str = date.toString("dd.MM.yyyy")
+        tasks = self.task_manager.tasks
+        day_tasks = [t for t in tasks if t.get("date") == date_str and not t.get("done", False)]
+        if not day_tasks:
+            return
+
+        # Собираем уникальные приоритеты (column)
+        priorities = set()
+        for task in day_tasks:
+            col = task.get("column", 0)
+            priorities.add(col)
+
+        colors = {
+            0: "#fdd5cf",   # красный
+            1: "#fee5b7",   # жёлтый
+            2: "#cbe5d8"    # зелёный
+        }
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Центр нижней части ячейки
+        x = rect.x() + rect.width() // 2
+        y = rect.y() + rect.height() - 8
+
+        dot_size = 6
+        spacing = 4
+        sorted_priorities = sorted(priorities)
+        total_dots = len(sorted_priorities)
+        if total_dots == 0:
+            painter.restore()
+            return
+
+        total_width = total_dots * dot_size + (total_dots - 1) * spacing
+        start_x = x - total_width // 2
+
+        for i, col in enumerate(sorted_priorities):
+            color = colors.get(col, "#b0b0b0")
+            painter.setBrush(QColor(color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            dot_rect = QRect(start_x + i * (dot_size + spacing), y - dot_size//2, dot_size, dot_size)
+            painter.drawEllipse(dot_rect)
+
+        painter.restore()
+
+class CalendarPage(QWidget):
+    def __init__(self, task_manager, parent=None):
+        super().__init__(parent)
+        self.task_manager = task_manager
+        self.setStyleSheet("background-color: transparent;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 10, 20, 20)
+        layout.setSpacing(10)
+
+        # ---- Фрейм с месяцем и стрелками ----
+        header_frame = QFrame()
+        header_frame.setStyleSheet("""
+            background: rgba(255,255,255,0.7);
+            border-radius: 20px;
+            padding: 5px;
+        """)
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(10, 5, 10, 5)
+
+        self.prev_btn = QPushButton("◀")
+        self.prev_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #98a1bc;
+                font-size: 18px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.5);
+                border-radius: 10px;
+            }
+        """)
+        self.prev_btn.clicked.connect(self.on_prev_month)
+
+        self.month_label = QLabel()
+        self.month_label.setStyleSheet("color: #99a1bb; border-radius: 15px; font-size: 18px;")
+        self.month_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.next_btn = QPushButton("▶")
+        self.next_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #98a1bc;
+                font-size: 18px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.5);
+                border-radius: 10px;
+            }
+        """)
+        self.next_btn.clicked.connect(self.on_next_month)
+
+        header_layout.addWidget(self.prev_btn)
+        header_layout.addWidget(self.month_label, stretch=1)
+        header_layout.addWidget(self.next_btn)
+
+        layout.addWidget(header_frame)
+
+        # ---- Кастомный календарь ----
+        self.calendar = CalendarGrid(self.task_manager)
+        self.calendar.dateSelected.connect(self.on_date_selected)
+        layout.addWidget(self.calendar)
+
+        # ---- Блок задач для выбранной даты ----
+        self.tasks_frame = QFrame()
+        self.tasks_frame.setStyleSheet("""
+            background: rgba(255,255,255,0.7);
+            border-radius: 20px;
+            padding: 10px;
+        """)
+        tasks_layout = QVBoxLayout(self.tasks_frame)
+        tasks_layout.setSpacing(8)
+
+        date_header = QHBoxLayout()
+        self.date_label = QLabel("Выберите дату")
+        self.date_label.setStyleSheet("color: #98a1bc; font-size: 16px; font-weight: bold;")
+        date_header.addWidget(self.date_label)
+
+        add_btn = QPushButton("+ Добавить")
+        add_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.7);
+                border: none;
+                border-radius: 12px;
+                padding: 4px 10px;
+                color: #98a1bc;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.9);
+            }
+        """)
+        add_btn.clicked.connect(self.add_task_for_selected_date)
+        date_header.addWidget(add_btn)
+        tasks_layout.addLayout(date_header)
+
+        self.tasks_list = QListWidget()
+        self.tasks_list.setStyleSheet("""
+            QListWidget {
+                background: rgba(255,255,255,0.2);
+                border-radius: 15px;
+                border: none;
+                color: #98a1bc;
+                font-size: 13px;
+                padding: 8px;
+            }
+            QListWidget::item {
+                background: rgba(255,255,255,0.8);
+                border-radius: 10px;
+                padding: 6px;
+                margin: 2px 0px;
+            }
+            QScrollBar:vertical { width: 0px; background: transparent; }
+        """)
+        tasks_layout.addWidget(self.tasks_list)
+
+        layout.addWidget(self.tasks_frame, stretch=1)
+
+        self.current_date = QDate.currentDate()
+        self.calendar.set_date(self.current_date)
+        self.update_month_label()
+        self.on_date_selected(self.current_date)
+
+    def update_month_label(self):
+        # Именительный падеж для месяцев
+        month_names = {
+            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+        }
+        month = self.calendar.current_date.month()
+        self.month_label.setText(month_names[month])
+
+    def on_prev_month(self):
+        self.calendar.previous_month()
+        self.update_month_label()
+
+    def on_next_month(self):
+        self.calendar.next_month()
+        self.update_month_label()
+
+    def on_date_selected(self, date):
+        self.current_date = date
+        date_str = date.toString("dd.MM.yyyy")
+        self.date_label.setText(date_str)
+
+        tasks = self.task_manager.tasks
+        filtered = [t for t in tasks if t.get("date") == date_str and not t.get("done", False)]
+        self.tasks_list.clear()
+        if filtered:
+            for task in filtered:
+                self.tasks_list.addItem(task["text"])
+        else:
+            self.tasks_list.addItem("Нет активных задач на эту дату")
+
+    def add_task_for_selected_date(self):
+        date_str = self.current_date.toString("dd.MM.yyyy")
+        text, ok = StyledEditDialog.get_text_dialog(
+            self,
+            title="Новая задача",
+            label="Введите текст задачи для {}".format(date_str),
+            initial_text=""
+        )
+        if ok and text:
+            self.task_manager.add_task(text, column=0, date=date_str)
+            self.calendar.update()
+            self.on_date_selected(self.current_date)
+
+    def refresh(self):
+        if hasattr(self, 'current_date'):
+            self.calendar.update()
+            self.on_date_selected(self.current_date)
+
+class SettingsPage(QWidget):
+    def __init__(self, task_manager, main_window, parent=None):
+        super().__init__(parent)
+        self.task_manager = task_manager
+        self.main_window = main_window
+        self.setStyleSheet("background-color: transparent;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        settings_frame = QFrame()
+        settings_frame.setStyleSheet("background: rgba(255,255,255,0.4); border-radius: 30px; padding: 20px;")
+        settings_layout = QVBoxLayout(settings_frame)
+
+        # --- Выбор фонового изображения ---
+        bg_label = QLabel("Фоновое изображение:")
+        bg_label.setStyleSheet("color: #98a1bc; font-size: 16px;")
+        settings_layout.addWidget(bg_label)
+
+        self.bg_path_label = QLabel("Не выбрано")
+        self.bg_path_label.setStyleSheet("color: #98a1bc; font-size: 14px; padding: 5px; background: rgba(255,255,255,0.3); border-radius: 8px;")
+        settings_layout.addWidget(self.bg_path_label)
+
+        bg_btn_layout = QHBoxLayout()
+        self.select_bg_btn = QPushButton("Выбрать изображение")
+        self.select_bg_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.7);
+                border: none;
+                border-radius: 12px;
+                padding: 8px;
+                color: #98a1bc;
+                font-size: 14px;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.9); }
+        """)
+        self.select_bg_btn.clicked.connect(self.select_background)
+        bg_btn_layout.addWidget(self.select_bg_btn)
+
+        self.apply_bg_btn = QPushButton("Применить")
+        self.apply_bg_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.7);
+                border: none;
+                border-radius: 12px;
+                padding: 8px;
+                color: #98a1bc;
+                font-size: 14px;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.9); }
+        """)
+        self.apply_bg_btn.clicked.connect(self.apply_background)
+        bg_btn_layout.addWidget(self.apply_bg_btn)
+
+        self.reset_bg_btn = QPushButton("Сбросить")
+        self.reset_bg_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.7);
+                border: none;
+                border-radius: 12px;
+                padding: 8px;
+                color: #98a1bc;
+                font-size: 14px;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.9); }
+        """)
+        self.reset_bg_btn.clicked.connect(self.reset_background)
+        bg_btn_layout.addWidget(self.reset_bg_btn)
+
+        settings_layout.addLayout(bg_btn_layout)
+
+        # --- Настройка города ---
+        city_label = QLabel("Город для погоды:")
+        city_label.setStyleSheet("color: #98a1bc; font-size: 16px; margin-top: 10px;")
+        settings_layout.addWidget(city_label)
+
+        city_layout = QHBoxLayout()
+        self.city_input = QLineEdit()
+        self.city_input.setPlaceholderText("Введите город")
+        self.city_input.setStyleSheet("""
+            QLineEdit {
+                background: rgba(255,255,255,0.7);
+                border: none;
+                border-radius: 12px;
+                padding: 6px;
+                color: #98a1bc;
+                font-size: 14px;
+            }
+        """)
+        city_layout.addWidget(self.city_input)
+
+        self.save_city_btn = QPushButton("Сохранить город")
+        self.save_city_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.7);
+                border: none;
+                border-radius: 12px;
+                padding: 8px;
+                color: #98a1bc;
+                font-size: 14px;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.9); }
+        """)
+        self.save_city_btn.clicked.connect(self.save_city)
+        city_layout.addWidget(self.save_city_btn)
+
+        settings_layout.addLayout(city_layout)
+
+        # --- Здесь можно добавить другие настройки ---
+
+        layout.addWidget(settings_frame)
+
+        self.selected_bg_path = None
+        self.load_settings()
+
+    def load_settings(self):
+        """Загружает текущие настройки (город) в поля."""
+        # Загружаем город из настроек
+        try:
+            with open("settings.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+                city = data.get("city", "")
+                if city:
+                    self.city_input.setText(city)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+    def save_city(self):
+        city = self.city_input.text().strip()
+        if not city:
+            QMessageBox.warning(self, "Ошибка", "Введите название города")
+            return
+
+        # Сохраняем город в файл
+        try:
+            with open("settings.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+
+        data["city"] = city
+        try:
+            with open("settings.json", "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить настройки: {e}")
+            return
+
+        # Обновляем город в WeatherWidget
+        if self.main_window and hasattr(self.main_window, 'task_card'):
+            weather_widget = self.main_window.task_card.weather_widget
+            if weather_widget:
+                weather_widget.city = city
+                weather_widget.city_input.setText(city)
+                weather_widget.update_weather()
+
+        QMessageBox.information(self, "Успех", f"Город '{city}' сохранён")
+
+    def select_background(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите фоновое изображение",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif)"
+        )
+        if file_path:
+            self.selected_bg_path = file_path
+            self.bg_path_label.setText(file_path)
+
+    def apply_background(self):
+        if self.selected_bg_path and self.main_window:
+            self.main_window.set_background_image(self.selected_bg_path)
+            print(f"Фон применён: {self.selected_bg_path}")
+
+    def reset_background(self):
+        if self.main_window:
+            self.main_window.reset_background()
+            self.bg_path_label.setText("Не выбрано")
+            self.selected_bg_path = None
+            print("Фон сброшен")
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -739,18 +1951,21 @@ class MainWindow(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.resize(800, 600)
 
-
-        self.bg_movie = QMovie("Sleepy cat animation.gif")
+        # ---- Фоновый гиф ----
+        self.bg_movie = QMovie(resource_path("Sleepy_cat.gif"))
         self.bg_label = QLabel(self)
         self.bg_label.setMovie(self.bg_movie)
         self.bg_movie.start()
         self.bg_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.bg_label.lower()
         self.bg_label.setScaledContents(True)
-        
+
+        saved_bg = self.load_background_path()
+        if saved_bg:
+            self.set_background_image(saved_bg)
 
         self.bg_pixmap = QPixmap()
-        #self.bg_scaling_mode = Qt.AspectRatioMode.KeepAspectRatioByExpanding
+        self.bg_scaling_mode = Qt.AspectRatioMode.KeepAspectRatioByExpanding
 
         # Главный контейнер (прозрачный)
         container = QWidget()
@@ -761,11 +1976,12 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-
-        # --- Заголовок  ---
+        # ---- Заголовок ----
         self.title_bar = QWidget()
         self.title_bar.setFixedHeight(40)
-        self.title_bar.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 255, 255, 1),stop:1 rgba(255, 255, 255, 0))")
+        self.title_bar.setStyleSheet(
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 255, 255, 1),stop:1 rgba(255, 255, 255, 0))"
+        )
         title_bar_layout = QHBoxLayout(self.title_bar)
         welcome = QLabel("Добро пожаловать!")
         welcome.setStyleSheet("font-size: 20px; color: #9197b1;")
@@ -802,30 +2018,33 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(self.title_bar)
 
-        # --- Тело (сайдбар + контент) ---
+        # ---- Тело (сайдбар + контент) ----
         body = QWidget()
         body.setStyleSheet("background-color: transparent;")
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
 
-        # Сайдбар
+        # ---- Сайдбар ----
         sidebar = QWidget()
         sidebar.setFixedWidth(80)
-        sidebar.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255, 255, 255, 1),stop:1 rgba(255, 255, 255, 0))")
+        sidebar.setStyleSheet(
+            "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255, 255, 255, 1),stop:1 rgba(255, 255, 255, 0))"
+        )
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         sidebar_layout.setSpacing(15)
 
         items = [
-            ("домик.png", "Home"),
-            ("список.png", "List"),
-            ("календарь.png", "Calendar"),
-            ("настройки.png", "Settings")
+            ("home.png", "Home"),
+            ("list.png", "List"),
+            ("calendar.png", "Calendar"),
+            ("settings.png", "Settings")
         ]
+        self.sidebar_buttons = []
         for icon_path, tooltip in items:
             btn = QPushButton()
-            btn.setIcon(QIcon(icon_path))
+            btn.setIcon(QIcon(resource_path(icon_path)))
             btn.setIconSize(QSize(40, 40))
             btn.setFixedSize(60, 60)
             btn.setToolTip(tooltip)
@@ -841,25 +2060,53 @@ class MainWindow(QMainWindow):
                 }
             """)
             sidebar_layout.addWidget(btn)
+            self.sidebar_buttons.append(btn)
+
         sidebar_layout.addStretch()
 
-        # Контент (здесь будет TaskCard)
+                # ---- Контент (QStackedWidget) ----
         content = QWidget()
         content.setStyleSheet("background-color: transparent;")
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(20, 20, 20, 20)   # отступы от краёв
+        content_layout.setContentsMargins(20, 20, 20, 20)
 
-        # Создаём TaskContainer и добавляем в контент
+        self.stacked_widget = QStackedWidget()
+        self.stacked_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.stacked_widget.setStyleSheet("background: transparent;")
+
+        # Создаём главную страницу (TaskContainer)
         self.task_card = TaskContainer()
-        QTimer.singleShot(0, self.task_card.update_radius)
-        content_layout.addWidget(self.task_card, stretch=1)
+        # Получаем общий менеджер задач (чтобы все страницы работали с одними данными)
+        self.task_manager = self.task_card.task_manager
 
+        # Создаём остальные страницы
+        self.page_list = AllTasksPage(self.task_manager)
+        self.page_calendar = CalendarPage(self.task_manager)
+        self.page_settings = SettingsPage(self.task_manager, self)
+
+        # Добавляем страницы в стек
+        self.stacked_widget.addWidget(self.task_card)      # индекс 0
+        self.stacked_widget.addWidget(self.page_list)      # индекс 1
+        self.stacked_widget.addWidget(self.page_calendar)  # индекс 2
+        self.stacked_widget.addWidget(self.page_settings)  # индекс 3
+
+        self.stacked_widget.currentChanged.connect(self.on_page_changed)
+
+        content_layout.addWidget(self.stacked_widget, stretch=1)
+
+        # ---- Сборка body ----
         body_layout.addWidget(sidebar)
         body_layout.addWidget(content)
 
         main_layout.addWidget(body)
 
-        # --- Логика изменения размера (без изменений) ---
+        # ---- Привязка кнопок сайдбара к страницам ----
+        self.sidebar_buttons[0].clicked.connect(lambda: self.stacked_widget.setCurrentIndex(0))
+        self.sidebar_buttons[1].clicked.connect(lambda: self.stacked_widget.setCurrentIndex(1))
+        self.sidebar_buttons[2].clicked.connect(lambda: self.stacked_widget.setCurrentIndex(2))
+        self.sidebar_buttons[3].clicked.connect(lambda: self.stacked_widget.setCurrentIndex(3))
+
+        # ---- Логика изменения размера окна ----
         self.setMouseTracking(True)
         self._resize_margin = 10
         self._resizing = False
@@ -868,13 +2115,104 @@ class MainWindow(QMainWindow):
         self._resize_start_geometry = None
         self.drag_pos = None
 
-    # 7. Обновляем размер фона при изменении окна
+        self.default_gif_path = "Sleepy_cat.gif"
+
+    def save_background_path(self, path):
+        try:
+            with open("settings.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+        data["background_path"] = path
+        with open("settings.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def load_background_path(self):
+        try:
+            with open("settings.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("background_path")
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+
+    def set_background_image(self, path):
+        # Останавливаем и очищаем предыдущий GIF, если он был
+        if self.bg_label.movie() is not None:
+            self.bg_label.movie().stop()
+            self.bg_label.setMovie(None)
+
+        # Проверяем, является ли файл GIF
+        if path.lower().endswith('.gif'):
+            # Загружаем анимированный GIF
+            movie = QMovie(path)
+            if movie.isValid():
+                self.bg_label.setMovie(movie)
+                movie.start()
+                self.bg_label.setScaledContents(True)
+                self.bg_label.show()
+                # Очищаем статичный фон, чтобы он не рисовался поверх
+                self.bg_pixmap = QPixmap()
+                self.update()
+                self.save_background_path(path)
+                return
+            else:
+                # Если GIF не загрузился, показываем сообщение или ничего не делаем
+                QMessageBox.warning(self, "Ошибка", "Не удалось загрузить GIF-файл")
+                return
+  
+        # Если не GIF – загружаем статичное изображение
+        pixmap = QPixmap(path)
+        if not pixmap.isNull():
+            self.bg_pixmap = pixmap
+            self.bg_scaling_mode = Qt.AspectRatioMode.KeepAspectRatioByExpanding
+            self.bg_label.hide()  # скрываем метку (она теперь не используется)
+            self.update()
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось загрузить изображение")
+     
+    def reset_background(self):
+         # Останавливаем и удаляем текущий GIF (если есть)
+        if self.bg_label.movie() is not None:
+            self.bg_label.movie().stop()
+            self.bg_label.setMovie(None)
+    
+        # Возвращаем стандартного кота
+        try:
+            movie = QMovie(resource_path(self.default_gif_path))
+            if movie.isValid():
+                self.bg_label.setMovie(movie)
+                movie.start()
+                self.bg_label.setScaledContents(True)
+                self.bg_label.show()
+            else:
+                # Если файл кота не найден, просто показываем пустой фон
+                self.bg_label.hide()
+        except Exception:
+            self.bg_label.hide()
+   
+        # Очищаем статичный фон
+        self.bg_pixmap = QPixmap()
+        self.bg_scaling_mode = Qt.AspectRatioMode.KeepAspectRatioByExpanding
+        self.save_background_path("")
+        self.update()
+
+    def on_page_changed(self, index):
+        if index == 0:  # Главная страница (TaskContainer)
+            self.task_card.rebuild_ui()
+        elif index == 1:  # Страница списка (AllTasksPage)
+            self.page_list.load_tasks()
+            self.page_list.load_done_tasks()
+        elif index == 2:  # Страница календаря (CalendarPage)
+            self.page_calendar.refresh()
+        # index == 3 (Настройки) – обновление не требуется
+
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.bg_label.setGeometry(0, 0, self.width(), self.height())
 
     def paintEvent(self, event):
-        # Рисуем фон всего окна
         painter = QPainter(self)
         if self.bg_pixmap and not self.bg_pixmap.isNull():
             scaled = self.bg_pixmap.scaled(
@@ -895,7 +2233,6 @@ class MainWindow(QMainWindow):
             self.showMaximized()
             self.btn_maximize.setText("❐")
 
-    # Остальные методы для изменения размера и перетаскивания (оставлены без изменений)
     def _get_resize_direction(self, pos):
         x, y = pos.x(), pos.y()
         w, h = self.width(), self.height()
@@ -904,14 +2241,22 @@ class MainWindow(QMainWindow):
         right = x > w - margin
         top = y < margin
         bottom = y > h - margin
-        if left and top: return 'top-left'
-        if right and top: return 'top-right'
-        if left and bottom: return 'bottom-left'
-        if right and bottom: return 'bottom-right'
-        if left: return 'left'
-        if right: return 'right'
-        if top: return 'top'
-        if bottom: return 'bottom'
+        if left and top:
+            return 'top-left'
+        if right and top:
+            return 'top-right'
+        if left and bottom:
+            return 'bottom-left'
+        if right and bottom:
+            return 'bottom-right'
+        if left:
+            return 'left'
+        if right:
+            return 'right'
+        if top:
+            return 'top'
+        if bottom:
+            return 'bottom'
         return None
 
     def mousePressEvent(self, event):
@@ -985,7 +2330,7 @@ class MainWindow(QMainWindow):
             'bottom-right': Qt.CursorShape.SizeFDiagCursor,
         }
         return cursor_map.get(direction, Qt.CursorShape.ArrowCursor)
-    
+
     def closeEvent(self, event):
         self.task_card.task_manager.save()
         event.accept()
@@ -1225,6 +2570,9 @@ class TaskContainer(QWidget):
         self.task_input.installEventFilter(self)
 
         self.done_list.itemDoubleClicked.connect(self.restore_task_from_done)
+        self.done_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.done_list.customContextMenuRequested.connect(self.show_done_context_menu)
+        QTimer.singleShot(0, self.update_radius)
         self.rebuild_ui()
 
     def eventFilter(self, obj, event):
@@ -1350,78 +2698,10 @@ class TaskContainer(QWidget):
         self.update_task_widths()
     
     def _create_task_widget(self, text, target_layout, task_id, date_str):
-        task_widget = QFrame()
-        task_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        task_widget.setMinimumWidth(0)
-        task_widget.setStyleSheet("background-color: white; border-radius: 20px; padding: 5px;")
-        task_widget._task_id = task_id
-        task_widget._target_layout = target_layout
-        task_widget._original_text = text  # сохраняем оригинальный текст без даты
-
-        # Основной HLayout
-        task_layout = QHBoxLayout(task_widget)
-        task_layout.setContentsMargins(10, 8, 10, 8)
-        task_layout.setSpacing(10)
-
-        # Вертикальный лейаут для текста и даты
-        v_layout = QVBoxLayout()
-        v_layout.setSpacing(2)
- 
-         # Текст задачи
-        task_label = QTextEdit()
-        task_label.setReadOnly(True)
-        task_label.setText(text)
-        task_label.setWordWrapMode(QTextOption.WrapMode.WordWrap)
-        task_label.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        task_label.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        task_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        task_label.setMinimumWidth(0)
-        task_label.setStyleSheet("""
-            QTextEdit {
-                background: transparent;
-                border: none;
-                padding: 0px;
-                color: #9297b0;
-                font-size: 14px;
-            }
-        """)
-        task_widget._label = task_label
-        v_layout.addWidget(task_label)
-
-        # Дата (маленькая подпись)
-        date_label = QLabel(date_str)
-        date_label.setStyleSheet("color: #b0b0b0; font-size: 10px; padding: 0px;")
-        date_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        v_layout.addWidget(date_label)
-        task_widget._date_label = date_label
-        task_layout.addLayout(v_layout, stretch=1)
-    
-        # Кнопка "Выполнено"
-        done_btn = QPushButton("")
-        done_btn.setFixedSize(24, 24)
-        done_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: gray;
-                border: 2px solid gray;
-                border-radius: 12px;
-                font-size: 14px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: gray;
-                color: white;
-            }
-        """)
-        done_btn.clicked.connect(lambda checked, w=task_widget: self.move_to_done(w))
-        task_layout.addWidget(done_btn)
-    
-        # Контекстное меню
-        task_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        task_widget.customContextMenuRequested.connect(
-            lambda pos, w=task_widget: self.show_context_menu(pos, w)
-        )
-   
+        task_widget = TaskWidget(task_id, text, date_str)
+        task_widget.set_target_layout(target_layout)
+        # Подключаем кнопку "Выполнено"
+        task_widget._done_btn.clicked.connect(lambda checked, w=task_widget: self.move_to_done(w))
         return task_widget
     
     def show_context_menu(self, pos, widget):
@@ -1459,7 +2739,7 @@ class TaskContainer(QWidget):
                 border: none;
             }
         """)
-
+        current_layout = widget.get_target_layout()
         # ---- Первый ряд: кружки приоритетов ----
         container1 = QWidget()
         layout1 = QHBoxLayout(container1)
@@ -1480,8 +2760,6 @@ class TaskContainer(QWidget):
         icon_red = create_color_icon("#fdd5cf")
         icon_yellow = create_color_icon("#fde4b7")
         icon_green = create_color_icon("#cce5d8")
-    
-        current_layout = getattr(widget, '_target_layout', None)
     
         btn_red = QPushButton()
         btn_red.setIcon(icon_red)
@@ -1522,9 +2800,9 @@ class TaskContainer(QWidget):
         layout2.setContentsMargins(10, 5, 10, 10)
     
         # Загружаем иконки (поместите файлы edit.png и delete.png в папку с программой)
-        edit_icon = QIcon("edit.png")
-        delete_icon = QIcon("delete.png")
-        calendar_icon = QIcon("edit_date.png")
+        edit_icon = QIcon(resource_path("edit.png"))
+        delete_icon = QIcon(resource_path("delete.png"))
+        calendar_icon = QIcon(resource_path("edit_date.png"))
         # Проверка, если файлов нет – можно использовать запасные символы
         if edit_icon.isNull():
             edit_icon = QIcon()  # или можно использовать QStyle
@@ -1578,11 +2856,10 @@ class TaskContainer(QWidget):
         menu.exec(widget.mapToGlobal(pos))
 
     def edit_task(self, widget):
-        task_id = getattr(widget, '_task_id', None)
+        task_id = widget.get_task_id()
         if task_id is None:
             return
         current_text = self.task_manager.get_task_text(task_id)
-        # Используем кастомный диалог
         new_text, ok = StyledEditDialog.get_text_dialog(
             self,
             title="Редактировать задачу",
@@ -1591,20 +2868,14 @@ class TaskContainer(QWidget):
         )
         if ok and new_text:
             self.task_manager.edit_task(task_id, new_text)
-            # обновляем текст в виджете
-            label = getattr(widget, '_label', None)
-            if label:
-               label.setText(new_text)
-            # обновляем оригинальный текст
-            widget._original_text = new_text
+            widget.set_text(new_text)
 
     def delete_task(self, widget):
-        task_id = getattr(widget, '_task_id', None)
+        task_id = widget.get_task_id()
         if task_id is None:
             return
         self.task_manager.delete_task(task_id)
-        # удаляем виджет
-        layout = getattr(widget, '_target_layout', None)
+        layout = widget.get_target_layout()
         if layout:
             layout.removeWidget(widget)
         if widget in self.task_widgets:
@@ -1624,34 +2895,27 @@ class TaskContainer(QWidget):
         return 0
         
     def move_task_to_column(self, widget, new_layout):
-        old_layout = getattr(widget, '_target_layout', None)
+        old_layout = widget.get_target_layout()
         if old_layout is None or old_layout == new_layout:
-            return  # некуда перемещать или уже в этой колонке
-        task_id = getattr(widget, '_task_id', None)
+            return
+        task_id = widget.get_task_id()
         if task_id is not None:
             new_col = self._get_column_index(new_layout)
             self.task_manager.move_task(task_id, new_col)
 
-        # Удаляем виджет из старого layout
         old_layout.removeWidget(widget)
-        # Добавляем в новый
         new_layout.addWidget(widget)
-        # Обновляем ссылку на layout
-        widget._target_layout = new_layout
-    
-        # Обновляем ширину задач (чтобы они подстроились под новую колонку)
+        widget.set_target_layout(new_layout)
+
         self.update_task_widths()
         
     def move_to_done(self, widget):
-        task_id = getattr(widget, '_task_id', None)
+        task_id = widget.get_task_id()
         if task_id is not None:
             if not self.task_manager.mark_done(task_id):
                 return
 
-        text_edit = getattr(widget, '_label', None)
-        if text_edit is None:
-            return
-        task_text = text_edit.toPlainText().strip()
+        task_text = widget.get_text()
         if not task_text:
             return
 
@@ -1663,7 +2927,7 @@ class TaskContainer(QWidget):
         item.setData(Qt.ItemDataRole.UserRole, task_text)
         self.done_list.addItem(item)
 
-        target_layout = getattr(widget, '_target_layout', None)
+        target_layout = widget.get_target_layout()
         if target_layout is not None:
             target_layout.removeWidget(widget)
         if widget in self.task_widgets:
@@ -1681,7 +2945,6 @@ class TaskContainer(QWidget):
             else:
                 original_text = display_text
 
-        # Находим задачу в менеджере по оригинальному тексту
         task_id = None
         for task in self.task_manager.tasks:
             if task.get("original_text") == original_text and task.get("done"):
@@ -1689,11 +2952,8 @@ class TaskContainer(QWidget):
                 break
 
         if task_id is not None:
-            self.task_manager.restore_task(task_id)
-
-        self.add_task(self.layout_green, text=original_text)
-        row = self.done_list.row(item)
-        self.done_list.takeItem(row)
+            self.task_manager.restore_task(task_id)   
+            self.rebuild_ui()                         
     
     
     def update_task_widths(self):
@@ -1794,12 +3054,11 @@ class TaskContainer(QWidget):
         self.add_task(target_layout, text=text, task_id=task_id)
 
     def change_task_date(self, widget):
-        task_id = getattr(widget, '_task_id', None)
+        task_id = widget.get_task_id()
         if task_id is None:
             return
         current_date_str = self.task_manager.get_task_date(task_id)
         current_date = QDate.fromString(current_date_str, "dd.MM.yyyy")
-    
         new_date, ok = StyledDateEditDialog.get_date_dialog(
             self,
             title="Изменить дату задачи",
@@ -1807,16 +3066,104 @@ class TaskContainer(QWidget):
         )
         if ok and new_date is not None:
             new_date_str = new_date.toString("dd.MM.yyyy")
-            # Обновляем в менеджере
             for task in self.task_manager.tasks:
                 if task["id"] == task_id:
                     task["date"] = new_date_str
                     self.task_manager.save()
                     break
-            # Обновляем отображение в виджете
-            date_label = getattr(widget, '_date_label', None)
-            if date_label:
-                date_label.setText(new_date_str)
+            widget.set_date(new_date_str)
+
+    def delete_done_task(self, item):
+        original_text = item.data(Qt.ItemDataRole.UserRole)
+        if not original_text:
+            display_text = item.text()
+            idx = display_text.rfind("  (")
+            if idx != -1:
+                original_text = display_text[:idx]
+            else:
+                original_text = display_text
+
+        task_id = None
+        for task in self.task_manager.tasks:
+            if task.get("original_text") == original_text and task.get("done"):
+                task_id = task["id"]
+                break
+
+        if task_id is not None:
+            self.task_manager.delete_task(task_id)
+
+        row = self.done_list.row(item)
+        self.done_list.takeItem(row)
+
+    def show_done_context_menu(self, pos):
+        item = self.done_list.itemAt(pos)
+        if item is None:
+            return
+
+        menu = QMenu()
+        menu.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                border-radius: 20px;
+                border: none;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 0px;
+                margin: 0px;
+            }
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 0px;
+            }
+            QPushButton:hover {
+                background-color: rgba(200, 200, 200, 0.15);
+                border-radius: 8px;
+            }
+            QPushButton:pressed {
+                background-color: rgba(180, 180, 180, 0.2);
+            }
+            QPushButton:focus {
+                outline: none;
+                border: none;
+            }
+        """)
+  
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+    
+        # Кнопка "Восстановить" (используем стандартную иконку сброса)
+        btn_restore = QPushButton()
+        btn_restore.setIcon(QIcon(resource_path("restore.png")))
+        btn_restore.setIconSize(QSize(24, 24))
+        btn_restore.setFixedSize(40, 40)
+        btn_restore.setToolTip("Восстановить")
+        btn_restore.clicked.connect(lambda: self.restore_task_from_done(item))
+        btn_restore.clicked.connect(menu.close)
+    
+        # Кнопка "Удалить навсегда" (используем стандартную иконку корзины)
+        btn_delete = QPushButton()
+        btn_delete.setIcon(QIcon(resource_path("delete.png")))
+        btn_delete.setIconSize(QSize(24, 24))
+        btn_delete.setFixedSize(40, 40)
+        btn_delete.setToolTip("Удалить навсегда")
+        btn_delete.clicked.connect(lambda: self.delete_done_task(item))
+        btn_delete.clicked.connect(menu.close)
+   
+        layout.addWidget(btn_restore)
+        layout.addWidget(btn_delete)
+   
+        widget_action = QWidgetAction(menu)
+        widget_action.setDefaultWidget(container)
+        menu.addAction(widget_action)
+  
+        menu.exec(self.done_list.mapToGlobal(pos))
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
